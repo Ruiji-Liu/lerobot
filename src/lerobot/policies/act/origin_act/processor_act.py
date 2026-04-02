@@ -52,16 +52,13 @@ def make_act_pre_post_processors(
         tuple[PolicyProcessorPipeline[dict[str, Any], dict[str, Any]], PolicyProcessorPipeline[PolicyAction, PolicyAction]]: A tuple containing the
         pre-processor pipeline and the post-processor pipeline.
     """
-    features_for_norm = {**config.input_features, **config.output_features}
-    if (not config.vision_normalize_in_processor) and config.image_features:
-        for k in config.image_features:
-            features_for_norm.pop(k, None)
+
     input_steps = [
         RenameObservationsProcessorStep(rename_map={}),
         AddBatchDimensionProcessorStep(),
         DeviceProcessorStep(device=config.device),
         NormalizerProcessorStep(
-            features=features_for_norm,
+            features={**config.input_features, **config.output_features},
             norm_map=config.normalization_mapping,
             stats=dataset_stats,
             device=config.device,

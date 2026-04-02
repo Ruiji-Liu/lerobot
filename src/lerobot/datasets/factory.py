@@ -25,6 +25,7 @@ from lerobot.datasets.lerobot_dataset import (
     LeRobotDatasetMetadata,
     MultiLeRobotDataset,
 )
+from lerobot.datasets.relative_eef_dataset import RelativeEEFDataset
 from lerobot.datasets.streaming_dataset import StreamingLeRobotDataset
 from lerobot.datasets.transforms import ImageTransforms
 from lerobot.utils.constants import ACTION, OBS_PREFIX, REWARD
@@ -89,6 +90,23 @@ def make_dataset(cfg: TrainPipelineConfig) -> LeRobotDataset | MultiLeRobotDatas
             cfg.dataset.repo_id, root=cfg.dataset.root, revision=cfg.dataset.revision
         )
         delta_timestamps = resolve_delta_timestamps(cfg.policy, ds_meta)
+        if cfg.dataset.use_relative_eef_chunk:
+            if cfg.dataset.streaming:
+                raise NotImplementedError(
+                    "`dataset.use_relative_eef_chunk=True` is not supported with streaming datasets yet."
+                )
+            action_feature = ds_meta.features.get(ACTION)
+            if not isinstance(action_feature, dict) or not isinstance(
+                action_feature.get("relative_eef_chunk"), dict
+            ):
+                raise ValueError(
+                    "`dataset.use_relative_eef_chunk=True` requires a postprocessed dataset whose "
+                    "`features.action.relative_eef_chunk` metadata is present."
+                )
+            if delta_timestamps is None:
+                delta_timestamps = {}
+            delta_timestamps = dict(delta_timestamps)
+            delta_timestamps[ACTION] = [0.0]
         if not cfg.dataset.streaming:
             dataset = LeRobotDataset(
                 cfg.dataset.repo_id,
@@ -124,6 +142,9 @@ def make_dataset(cfg: TrainPipelineConfig) -> LeRobotDataset | MultiLeRobotDatas
             "Multiple datasets were provided. Applied the following index mapping to the provided datasets: "
             f"{pformat(dataset.repo_id_to_index, indent=2)}"
         )
+
+    if cfg.dataset.use_relative_eef_chunk:
+        dataset = RelativeEEFDataset(dataset)
 
     if cfg.dataset.use_imagenet_stats:
         for key in dataset.meta.camera_keys:

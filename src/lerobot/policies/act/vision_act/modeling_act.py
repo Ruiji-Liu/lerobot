@@ -381,10 +381,6 @@ class ACTPolicy(PreTrainedPolicy):
 
         actions_hat, (mu_hat, log_sigma_x2_hat) = self.model(batch)
 
-        # print("batch[action]", batch[ACTION].shape)
-        # print("batch[action_is_pad]", batch["action_is_pad"].shape)
-        # print("actions_hat", actions_hat.shape)
-
         l1_loss = (
             F.l1_loss(batch[ACTION], actions_hat, reduction="none") * ~batch["action_is_pad"].unsqueeze(-1)
         ).mean()

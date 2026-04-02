@@ -14,7 +14,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 from dataclasses import dataclass, field
-from typing import Literal
+
 from lerobot.configs.policies import PreTrainedConfig
 from lerobot.configs.types import NormalizationMode
 from lerobot.optim.optimizers import AdamWConfig
@@ -95,39 +95,10 @@ class ACTConfig(PreTrainedConfig):
     )
 
     # Architecture.
-    DEFAULT_VISION_HF_IDS = {
-    "siglip2": "google/siglip2-base-patch16-256",
-    "dinov2": "facebook/dinov2-small",
-    "dinov3": "facebook/dinov3-vits16-pretrain-lvd1689m",
-}
     # Vision backbone.
-    # NOTE: keep as str (not Literal) for draccus compatibility.
-    vision_encoder_type: str = "resnet"
-
-    # resnet 用这个（保留原字段）
     vision_backbone: str = "resnet18"
     pretrained_backbone_weights: str | None = "ResNet18_Weights.IMAGENET1K_V1"
     replace_final_stride_with_dilation: int = False
-
-    # HF vision 用这个（siglip2/dino）
-    vision_encoder_hf_id: str | None = None   # "google/siglip2-base-patch16-256" facebook/dinov2-small facebook/dinov3-vits16-pretrain-lvd1689m
- 
-    # 归一化/预处理策略：推荐把视觉预处理放到模型里做（避免 processor double-normalize）
-    vision_normalize_in_processor: bool = True   # resnet 默认保持兼容
-    vision_normalize_in_model: bool = False      # resnet 默认保持兼容
-
-    # 当 vision_normalize_in_model=True 时用的规范
-    vision_input_norm: str = "auto"
-
-    image_size: int = 256
-    center_crop: bool = True
-    # Vision encoder training control
-    vision_freeze: bool = False
-    # If set, freeze all and unfreeze only the last N layers/stages of the vision encoder.
-    # For ViT backbones, this maps to the last N transformer blocks.
-    # For ResNet, this maps to the last N stages (layer4, layer3, layer2, layer1, stem).
-    vision_trainable_layers: int | None = None
-
     # Transformer layers.
     pre_norm: bool = False
     dim_model: int = 512
@@ -156,37 +127,15 @@ class ACTConfig(PreTrainedConfig):
     optimizer_lr: float = 1e-5
     optimizer_weight_decay: float = 1e-4
     optimizer_lr_backbone: float = 1e-5
-    
+
     def __post_init__(self):
         super().__post_init__()
 
-        allowed_encoder_types = {"resnet", "siglip2", "dinov2", "dinov3"}
-        if self.vision_encoder_type not in allowed_encoder_types:
+        """Input validation (not exhaustive)."""
+        if not self.vision_backbone.startswith("resnet"):
             raise ValueError(
-                f"`vision_encoder_type` must be one of {sorted(allowed_encoder_types)}. "
-                f"Got {self.vision_encoder_type}."
+                f"`vision_backbone` must be one of the ResNet variants. Got {self.vision_backbone}."
             )
-        if self.vision_trainable_layers is not None and self.vision_trainable_layers < 0:
-            raise ValueError("vision_trainable_layers must be >= 0 or None.")
-        
-        if self.image_features and self.vision_encoder_type != "resnet":
-            if self.vision_encoder_hf_id is None:
-                self.vision_encoder_hf_id = self.DEFAULT_VISION_HF_IDS.get(self.vision_encoder_type)
-            if self.vision_encoder_hf_id is None:
-                raise ValueError(
-                    f"vision_encoder_type='{self.vision_encoder_type}' requires a HF repo_id. "
-                    "Set vision_encoder_hf_id or add it to DEFAULT_VISION_HF_IDS."
-                )
-        if self.vision_encoder_type == "resnet" and self.image_features:
-            if not self.vision_backbone.startswith("resnet"):
-                raise ValueError(f"`vision_backbone` must start with 'resnet'. Got {self.vision_backbone}")
-            if not self.vision_normalize_in_processor:
-                raise ValueError("For resnet backbone, keep vision_normalize_in_processor=True (or add resnet norm in model).")
-        if self.image_features and self.vision_encoder_type != "resnet":
-            if self.vision_normalize_in_processor:
-                raise ValueError("For siglip2/dinov2/dinov3, set vision_normalize_in_processor=False.")
-            if not self.vision_normalize_in_model:
-                raise ValueError("For siglip2/dinov2/dinov3, set vision_normalize_in_model=True.")
         if self.temporal_ensemble_coeff is not None and self.n_action_steps > 1:
             raise NotImplementedError(
                 "`n_action_steps` must be 1 when using temporal ensembling. This is "

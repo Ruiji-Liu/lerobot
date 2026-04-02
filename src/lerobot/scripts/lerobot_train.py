@@ -318,9 +318,19 @@ def train(cfg: TrainPipelineConfig, accelerator: Accelerator | None = None):
 
     num_learnable_params = sum(p.numel() for p in policy.parameters() if p.requires_grad)
     num_total_params = sum(p.numel() for p in policy.parameters())
+    num_backbone_learnable = sum(
+        p.numel() for n, p in policy.named_parameters() if n.startswith("model.backbone") and p.requires_grad
+    )
+    num_backbone_total = sum(
+        p.numel() for n, p in policy.named_parameters() if n.startswith("model.backbone")
+    )
 
     if is_main_process:
         logging.info(colored("Output dir:", "yellow", attrs=["bold"]) + f" {cfg.output_dir}")
+        logging.info(
+            f"vision_backbone_learnable_params={num_backbone_learnable} "
+            f"vision_backbone_total_params={num_backbone_total}"
+        )
         if cfg.env is not None:
             logging.info(f"{cfg.env.task=}")
             logging.info("Creating environment processors")

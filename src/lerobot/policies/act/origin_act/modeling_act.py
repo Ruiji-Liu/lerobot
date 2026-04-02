@@ -37,246 +37,6 @@ from lerobot.policies.act.configuration_act import ACTConfig
 from lerobot.policies.pretrained import PreTrainedPolicy
 from lerobot.utils.constants import ACTION, OBS_ENV_STATE, OBS_IMAGES, OBS_STATE
 
-IMAGENET_MEAN = torch.tensor([0.485, 0.456, 0.406]).view(1, 3, 1, 1)
-IMAGENET_STD  = torch.tensor([0.229, 0.224, 0.225]).view(1, 3, 1, 1)
-
-SIGLIP_MEAN = torch.tensor([0.5, 0.5, 0.5]).view(1, 3, 1, 1)
-SIGLIP_STD  = torch.tensor([0.5, 0.5, 0.5]).view(1, 3, 1, 1)
-
-def _to_float_0_1(x: torch.Tensor) -> torch.Tensor:
-    if x.dtype == torch.uint8:
-        return x.float() / 255.0
-    x = x.float()
-    if x.max() > 1.5:  # float 但还是 0..255
-        x = x / 255.0
-    return x
-
-def _center_crop_square_bchw(x: torch.Tensor) -> torch.Tensor:
-    b, c, h, w = x.shape
-    s = min(h, w)
-    top = (h - s) // 2
-    left = (w - s) // 2
-    return x[:, :, top : top + s, left : left + s]
-
-def _resize_bchw(x: torch.Tensor, size_hw: tuple[int, int]) -> torch.Tensor:
-    try:
-        return F.interpolate(x, size=size_hw, mode="bilinear", align_corners=False, antialias=True)
-    except TypeError:
-        return F.interpolate(x, size=size_hw, mode="bilinear", align_corners=False)
-
-def _crop_to_patch_multiple(x: torch.Tensor, patch_size: int) -> torch.Tensor:
-    b, c, h, w = x.shape
-    h2 = (h // patch_size) * patch_size
-    w2 = (w // patch_size) * patch_size
-    if h2 == 0 or w2 == 0:
-        raise ValueError(f"Image too small for patch_size={patch_size}: {(h, w)}")
-    return x[:, :, :h2, :w2]
-def _normalize(x: torch.Tensor, mode: str) -> torch.Tensor:
-    if mode == "none":
-        return x
-    if mode == "imagenet":
-        mean = IMAGENET_MEAN.to(device=x.device, dtype=x.dtype)
-        std  = IMAGENET_STD.to(device=x.device, dtype=x.dtype)
-        return (x - mean) / std
-    if mode == "siglip":
-        mean = SIGLIP_MEAN.to(device=x.device, dtype=x.dtype)
-        std  = SIGLIP_STD.to(device=x.device, dtype=x.dtype)
-        return (x - mean) / std
-    raise ValueError(f"Unknown vision_input_norm: {mode}")
-
-
-class ACTVisionBackbone(nn.Module):
-    """
-    forward(img[B,3,H,W]) -> feat[B,C,H',W']
-    """
-    def _set_requires_grad(self, module: nn.Module, requires_grad: bool) -> None:
-        for p in module.parameters():
-            p.requires_grad = requires_grad
-
-    def _get_vit_blocks(self, model: nn.Module) -> list[nn.Module] | None:
-        candidates = [
-            ("encoder", "layer"),
-            ("encoder", "layers"),
-            ("vision_model", "encoder", "layer"),
-            ("vision_model", "encoder", "layers"),
-            ("transformer", "encoder", "layer"),
-            ("transformer", "encoder", "layers"),
-        ]
-        for path in candidates:
-            obj = model
-            ok = True
-            for attr in path:
-                if not hasattr(obj, attr):
-                    ok = False
-                    break
-                obj = getattr(obj, attr)
-            if ok and isinstance(obj, (list, nn.ModuleList, tuple)):
-                return list(obj)
-        return None
-
-    def _apply_vision_freeze(self) -> None:
-        if not self.config.vision_freeze and self.config.vision_trainable_layers is None:
-            return
-        n_trainable = self.config.vision_trainable_layers
-
-        if self.kind == "resnet":
-            base = getattr(self, "backbone_model", None)
-            if base is None:
-                return
-            self._set_requires_grad(base, False)
-            if n_trainable is None:
-                return
-            stages: list[nn.Module] = []
-            for name in ["layer4", "layer3", "layer2", "layer1", "bn1", "conv1"]:
-                if hasattr(base, name):
-                    stages.append(getattr(base, name))
-            if n_trainable > 0:
-                for m in stages[:n_trainable]:
-                    self._set_requires_grad(m, True)
-            return
-
-        # ViT-style backbones
-        self._set_requires_grad(self.model, False)
-        if n_trainable is None:
-            return
-        blocks = self._get_vit_blocks(self.model)
-        if not blocks:
-            return
-        if n_trainable > 0:
-            for b in blocks[-n_trainable:]:
-                self._set_requires_grad(b, True)
-        for attr in ["layernorm", "layer_norm", "ln_post", "norm"]:
-            if hasattr(self.model, attr):
-                self._set_requires_grad(getattr(self.model, attr), True)
-
-    def __init__(self, config):
-        super().__init__()
-        self.config = config
-        self.kind = config.vision_encoder_type
-        self.patch_size: int | None = None
-
-        if self.kind == "resnet":
-            backbone_model = getattr(torchvision.models, config.vision_backbone)(
-                replace_stride_with_dilation=[False, False, config.replace_final_stride_with_dilation],
-                weights=config.pretrained_backbone_weights,
-                norm_layer=FrozenBatchNorm2d,
-            )
-            self.backbone_model = backbone_model
-            self.model = IntermediateLayerGetter(backbone_model, return_layers={"layer4": "feature_map"})
-            self.out_channels = backbone_model.fc.in_features
-            self._apply_vision_freeze()
-            return
-
-        hf_id = config.vision_encoder_hf_id
-        if hf_id is None:
-            hf_id = getattr(config, "DEFAULT_VISION_HF_IDS", {}).get(self.kind)
-        if hf_id is None:
-            raise ValueError(f"HF id is None for vision_encoder_type={self.kind}")
-
-        if self.kind == "siglip2":
-            if "naflex" in hf_id:
-                from transformers import Siglip2VisionModel
-                self.model = Siglip2VisionModel.from_pretrained(hf_id)
-                self.out_channels = int(self.model.config.hidden_size)
-                self.patch_size = int(self.model.config.patch_size)
-            else:
-                # FixRes checkpoints (224/256/384/512) currently load as SigLIP in transformers
-                from transformers import SiglipVisionModel
-                self.model = SiglipVisionModel.from_pretrained(hf_id)
-                self.out_channels = int(self.model.config.hidden_size)
-                self.patch_size = int(self.model.config.patch_size)
-            self.siglip_size = int(config.image_size)  # 256
-            self.siglip_center_crop = bool(config.center_crop)
-            self._apply_vision_freeze()
-            return
-        if self.kind == "dinov2":
-            from transformers import Dinov2Model
-            self.model = Dinov2Model.from_pretrained(hf_id)
-            self.out_channels = int(self.model.config.hidden_size)
-            self.patch_size = int(self.model.config.patch_size)
-            self.siglip_size = int(config.image_size)
-            self.siglip_center_crop = bool(config.center_crop)
-            self._apply_vision_freeze()
-            return
-
-        if self.kind == "dinov3":
-            # transformers 版本不一致时 Dinov3Model 可能不存在，所以 fallback 到 AutoModel
-            try:
-                from transformers import Dinov3Model
-                self.model = Dinov3Model.from_pretrained(hf_id)
-            except Exception:
-                from transformers import AutoModel
-                self.model = AutoModel.from_pretrained(hf_id)
-
-            hs = getattr(self.model.config, "hidden_size", None)
-            ps = getattr(self.model.config, "patch_size", None)
-            if hs is None or ps is None:
-                raise ValueError(
-                    "This DINOv3 checkpoint is not ViT-style (missing hidden_size/patch_size). "
-                    "If you used dinov3-convnext-*, you need a different adapter."
-                )
-            self.out_channels = int(hs)
-            self.patch_size = int(ps)
-            self.siglip_size = int(config.image_size)
-            self.siglip_center_crop = bool(config.center_crop)
-            self._apply_vision_freeze()
-            return
-
-        raise ValueError(f"Unknown vision_encoder_type: {self.kind}")
-
-    def _resolve_norm_mode(self) -> str:
-        mode = self.config.vision_input_norm
-        if mode != "auto":
-            return mode
-        if self.kind == "siglip2":
-            return "siglip"
-        if self.kind in ("dinov2", "dinov3", "resnet"):
-            return "imagenet"
-        return "none"
-
-    def forward(self, img: torch.Tensor) -> torch.Tensor:
-        
-        if self.kind == "resnet":
-            # resnet：保持原逻辑（默认由 processor 做 normalization_mapping["VISUAL"]）
-            return self.model(img)["feature_map"]
-
-        x = _to_float_0_1(img)
-
-        # SigLIP2/DINO：center crop -> resize 256x256 (skip if already correct)
-        if self.kind in ("siglip2", "dinov2", "dinov3"):
-            if self.siglip_center_crop and x.shape[-2] != x.shape[-1]:
-                x = _center_crop_square_bchw(x)
-            if x.shape[-2:] != (self.siglip_size, self.siglip_size):
-                x = _resize_bchw(x, (self.siglip_size, self.siglip_size))
-
-        # DINO：默认不再裁到 patch_size 倍数（保持 256x256）
-        # if self.patch_size is not None and getattr(self.config, "dino_crop_to_patch_multiple", False):
-        #     x = _crop_to_patch_multiple(x, self.patch_size)
-
-        # ✅ 在 backbone 内做 mean/std normalize
-        if self.config.vision_normalize_in_model:
-            x = _normalize(x, self._resolve_norm_mode())
-        print(f"[ACTVisionBackbone] encoder_input shape={tuple(x.shape)}")  # (B,3,H,W)
-        # ViT 输出 token：last_hidden_state (B, L, D)
-        try:
-            out = self.model(pixel_values=x, return_dict=True, interpolate_pos_encoding=True)
-        except TypeError:
-            out = self.model(pixel_values=x, return_dict=True)
-        
-
-        seq = out.last_hidden_state
-        B, L, D = seq.shape
-        ps = int(self.patch_size)
-        Hp, Wp = x.shape[-2] // ps, x.shape[-1] // ps
-        patch_count = Hp * Wp
-
-        # 兼容 cls/register tokens：取最后 patch_count 个 patch tokens
-        if L < patch_count:
-            raise ValueError(f"Token length {L} < patch_count {patch_count}.")
-        patches = seq[:, -patch_count:, :]  # (B, Hp*Wp, D)
-
-        feat = patches.transpose(1, 2).contiguous().view(B, D, Hp, Wp)
-        return feat
 
 class ACTPolicy(PreTrainedPolicy):
     """
@@ -380,10 +140,6 @@ class ACTPolicy(PreTrainedPolicy):
             batch[OBS_IMAGES] = [batch[key] for key in self.config.image_features]
 
         actions_hat, (mu_hat, log_sigma_x2_hat) = self.model(batch)
-
-        # print("batch[action]", batch[ACTION].shape)
-        # print("batch[action_is_pad]", batch["action_is_pad"].shape)
-        # print("actions_hat", actions_hat.shape)
 
         l1_loss = (
             F.l1_loss(batch[ACTION], actions_hat, reduction="none") * ~batch["action_is_pad"].unsqueeze(-1)
@@ -565,7 +321,15 @@ class ACT(nn.Module):
 
         # Backbone for image feature extraction.
         if self.config.image_features:
-            self.backbone = ACTVisionBackbone(config)
+            backbone_model = getattr(torchvision.models, config.vision_backbone)(
+                replace_stride_with_dilation=[False, False, config.replace_final_stride_with_dilation],
+                weights=config.pretrained_backbone_weights,
+                norm_layer=FrozenBatchNorm2d,
+            )
+            # Note: The assumption here is that we are using a ResNet model (and hence layer4 is the final
+            # feature map).
+            # Note: The forward method of this returns a dict: {"feature_map": output}.
+            self.backbone = IntermediateLayerGetter(backbone_model, return_layers={"layer4": "feature_map"})
 
         # Transformer (acts as VAE decoder when training with the variational objective).
         self.encoder = ACTEncoder(config)
@@ -584,7 +348,7 @@ class ACT(nn.Module):
         self.encoder_latent_input_proj = nn.Linear(config.latent_dim, config.dim_model)
         if self.config.image_features:
             self.encoder_img_feat_input_proj = nn.Conv2d(
-                self.backbone.out_channels, config.dim_model, kernel_size=1
+                backbone_model.fc.in_features, config.dim_model, kernel_size=1
             )
         # Transformer encoder positional embeddings.
         n_1d_tokens = 1  # for the latent
@@ -602,14 +366,7 @@ class ACT(nn.Module):
 
         # Final action regression head on the output of the transformer's decoder.
         self.action_head = nn.Linear(config.dim_model, self.config.action_feature.shape[0])
-        self.register_buffer(
-            "_latent_zero",
-            torch.zeros(1, config.latent_dim, dtype=torch.float32)
-        )
-        self.register_buffer(
-            "_decoder_zero",
-            torch.zeros(self.config.chunk_size, 1, self.config.dim_model, dtype=torch.float32)
-        )
+
         self._reset_parameters()
 
     def _reset_parameters(self):
@@ -671,7 +428,7 @@ class ACT(nn.Module):
             cls_joint_is_pad = torch.full(
                 (batch_size, 2 if self.config.robot_state_feature else 1),
                 False,
-                device=vae_encoder_input.device,
+                device=batch[OBS_STATE].device,
             )
             key_padding_mask = torch.cat(
                 [cls_joint_is_pad, batch["action_is_pad"]], axis=1
@@ -694,10 +451,9 @@ class ACT(nn.Module):
             # When not using the VAE encoder, we set the latent to be all zeros.
             mu = log_sigma_x2 = None
             # TODO(rcadene, alexander-soare): remove call to `.to` to speedup forward ; precompute and use buffer
-            # latent_sample = torch.zeros([batch_size, self.config.latent_dim], dtype=torch.float32).to(
-            #     batch[OBS_STATE].device
-            # )
-            latent_sample = self._latent_zero.expand(batch_size, -1)
+            latent_sample = torch.zeros([batch_size, self.config.latent_dim], dtype=torch.float32).to(
+                batch[OBS_STATE].device
+            )
 
         # Prepare transformer encoder inputs.
         encoder_in_tokens = [self.encoder_latent_input_proj(latent_sample)]
@@ -714,7 +470,7 @@ class ACT(nn.Module):
             # NOTE: If modifying this section, verify on MPS devices that
             # gradients remain stable (no explosions or NaNs).
             for img in batch[OBS_IMAGES]:
-                cam_features = self.backbone(img)  # (B, C, H', W')
+                cam_features = self.backbone(img)["feature_map"]
                 cam_pos_embed = self.encoder_cam_feat_pos_embed(cam_features).to(dtype=cam_features.dtype)
                 cam_features = self.encoder_img_feat_input_proj(cam_features)
 
@@ -734,13 +490,11 @@ class ACT(nn.Module):
         # Forward pass through the transformer modules.
         encoder_out = self.encoder(encoder_in_tokens, pos_embed=encoder_in_pos_embed)
         # TODO(rcadene, alexander-soare): remove call to `device` ; precompute and use buffer
-        # decoder_in = torch.zeros(
-        #     (self.config.chunk_size, batch_size, self.config.dim_model),
-        #     dtype=encoder_in_pos_embed.dtype,
-        #     device=encoder_in_pos_embed.device,
-        # )
-        decoder_in    = self._decoder_zero.expand(-1, batch_size, -1)
-
+        decoder_in = torch.zeros(
+            (self.config.chunk_size, batch_size, self.config.dim_model),
+            dtype=encoder_in_pos_embed.dtype,
+            device=encoder_in_pos_embed.device,
+        )
         decoder_out = self.decoder(
             decoder_in,
             encoder_out,

@@ -117,7 +117,7 @@ class ACTConfig(PreTrainedConfig):
     vision_normalize_in_model: bool = False      # resnet 默认保持兼容
 
     # 当 vision_normalize_in_model=True 时用的规范
-    vision_input_norm: str = "auto"
+    vision_input_norm: Literal["auto", "imagenet", "siglip", "none"] = "auto"
 
     image_size: int = 256
     center_crop: bool = True
