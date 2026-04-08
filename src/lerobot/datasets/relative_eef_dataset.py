@@ -21,6 +21,16 @@ class RelativeEEFChunkSpec:
     base_action_names: tuple[str, ...]
 
 
+def _get_relative_chunk_meta(feature_info: dict[str, Any]) -> dict[str, Any] | None:
+    chunk_meta = feature_info.get("relative_eef_chunk")
+    if isinstance(chunk_meta, dict):
+        return chunk_meta
+    chunk_meta = feature_info.get("relative_eef_action_chunk")
+    if isinstance(chunk_meta, dict):
+        return chunk_meta
+    return None
+
+
 def _to_numpy_1d(value: torch.Tensor | np.ndarray | list[float] | tuple[float, ...]) -> np.ndarray:
     if isinstance(value, torch.Tensor):
         value = value.detach().cpu().numpy()
@@ -32,12 +42,13 @@ def _to_numpy_1d(value: torch.Tensor | np.ndarray | list[float] | tuple[float, .
 
 def _infer_relative_eef_chunk_spec(feature_info: dict[str, Any]) -> RelativeEEFChunkSpec:
     shape = feature_info.get("shape")
-    chunk_meta = feature_info.get("relative_eef_chunk")
+    chunk_meta = _get_relative_chunk_meta(feature_info)
     if not isinstance(shape, (list, tuple)) or len(shape) != 1:
         raise ValueError(f"Expected flat action feature for relative EEF chunk dataset, got shape={shape}.")
     if not isinstance(chunk_meta, dict):
         raise ValueError(
-            "Expected `features.action.relative_eef_chunk` metadata. "
+            "Expected `features.action.relative_eef_chunk` or "
+            "`features.action.relative_eef_action_chunk` metadata. "
             "This wrapper is intended for postprocessed relative-eef chunk datasets."
         )
 
@@ -132,6 +143,8 @@ class RelativeEEFDataset(Dataset):
         action_feature["names"] = list(self.chunk_spec.base_action_names)
         if isinstance(action_feature.get("relative_eef_chunk"), dict):
             action_feature["relative_eef_chunk"]["flattened"] = False
+        if isinstance(action_feature.get("relative_eef_action_chunk"), dict):
+            action_feature["relative_eef_action_chunk"]["flattened"] = False
         features[self.action_key] = action_feature
 
         # Prevent policies/factory from misclassifying `action_is_pad` as another ACTION feature.

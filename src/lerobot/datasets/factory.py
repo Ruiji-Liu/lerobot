@@ -36,6 +36,14 @@ IMAGENET_STATS = {
 }
 
 
+def has_relative_eef_chunk_metadata(action_feature: object) -> bool:
+    if not isinstance(action_feature, dict):
+        return False
+    return isinstance(action_feature.get("relative_eef_chunk"), dict) or isinstance(
+        action_feature.get("relative_eef_action_chunk"), dict
+    )
+
+
 def resolve_delta_timestamps(
     cfg: PreTrainedConfig, ds_meta: LeRobotDatasetMetadata
 ) -> dict[str, list] | None:
@@ -96,12 +104,11 @@ def make_dataset(cfg: TrainPipelineConfig) -> LeRobotDataset | MultiLeRobotDatas
                     "`dataset.use_relative_eef_chunk=True` is not supported with streaming datasets yet."
                 )
             action_feature = ds_meta.features.get(ACTION)
-            if not isinstance(action_feature, dict) or not isinstance(
-                action_feature.get("relative_eef_chunk"), dict
-            ):
+            if not has_relative_eef_chunk_metadata(action_feature):
                 raise ValueError(
                     "`dataset.use_relative_eef_chunk=True` requires a postprocessed dataset whose "
-                    "`features.action.relative_eef_chunk` metadata is present."
+                    "`features.action.relative_eef_chunk` or "
+                    "`features.action.relative_eef_action_chunk` metadata is present."
                 )
             if delta_timestamps is None:
                 delta_timestamps = {}
