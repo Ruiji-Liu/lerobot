@@ -1,0 +1,24 @@
+lerobot-train \
+  --dataset.repo_id=/home/ubuntu/LeForge/Data/Postprocess_lerobot/umi_pick_cubes_tcp_obsh5_relative30_rot6d \
+  --dataset.use_relative_eef_chunk=true \
+  --policy.path=lerobot/xvla-base \
+  --policy.chunk_size=30 \
+  --policy.n_action_steps=30 \
+  --policy.action_mode=auto \
+  --policy.max_state_dim=32 \
+  --policy.max_action_dim=20 \
+  --policy.dtype=bfloat16 \
+  --policy.freeze_vision_encoder=false \
+  --policy.freeze_language_encoder=false \
+  --policy.train_policy_transformer=true \
+  --policy.train_soft_prompts=true \
+  --policy.push_to_hub=false \
+  --policy.repo_id="" \
+  --num_workers=8 \
+  --batch_size=4 \
+  --steps=20000 \
+  --output_dir=outputs/train_relative_xvla/umi_tcp_relative_h30 \
+  --job_name=umi_relative_xvla \
+  --policy.device=cuda \
+  --wandb.enable=false \
+  --log_freq=20

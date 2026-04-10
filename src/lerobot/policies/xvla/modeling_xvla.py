@@ -199,6 +199,7 @@ class XVLAModel(nn.Module):
         domain_id: torch.LongTensor,
         proprio: torch.Tensor,
         action: torch.Tensor,
+        action_is_pad: torch.Tensor | None = None,
     ) -> dict[str, torch.Tensor]:
         """
         Forward pass for the XVLA model.
@@ -226,7 +227,7 @@ class XVLAModel(nn.Module):
             proprio=proprio_m,
             **enc,
         )
-        return self.action_space.compute_loss(pred_action, action)
+        return self.action_space.compute_loss(pred_action, action, action_is_pad=action_is_pad)
 
     @torch.no_grad()
     def generate_actions(
@@ -369,6 +370,14 @@ class XVLAPolicy(PreTrainedPolicy):
             actions = pad_vector(actions, self.model.dim_action)
         return actions
 
+    def _prepare_action_pad(self, batch: dict[str, Tensor]) -> Tensor | None:
+        action_is_pad = batch.get("action_is_pad")
+        if action_is_pad is None:
+            return None
+        if action_is_pad.ndim == 1:
+            action_is_pad = action_is_pad.unsqueeze(0)
+        return pad_tensor_along_dim(action_is_pad.bool(), self.config.chunk_size, dim=1)
+
     def _build_model_inputs(self, batch: dict[str, Tensor]) -> dict[str, Tensor]:
         input_ids = batch[OBS_LANGUAGE_TOKENS]
         batch_size = input_ids.shape[0]
@@ -386,7 +395,8 @@ class XVLAPolicy(PreTrainedPolicy):
     def forward(self, batch: dict[str, Tensor]) -> tuple[Tensor, dict]:
         inputs = self._build_model_inputs(batch)
         targets = self._prepare_action_targets(batch)
-        losses = self.model(action=targets, **inputs)
+        action_is_pad = self._prepare_action_pad(batch)
+        losses = self.model(action=targets, action_is_pad=action_is_pad, **inputs)
         total_loss = sum(losses.values())
 
         log_dict = {k: v.detach().item() for k, v in losses.items()}

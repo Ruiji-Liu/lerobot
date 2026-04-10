@@ -1256,18 +1256,40 @@ class PI05Policy(PreTrainedPolicy):
         original_action_dim = self.config.output_features[ACTION].shape[0]
         losses = losses[:, :, :original_action_dim]
 
+        valid_action_mask = None
+        if "action_is_pad" in batch:
+            valid_action_mask = (~batch["action_is_pad"]).to(device=losses.device)
+            valid_action_mask = valid_action_mask.unsqueeze(-1).to(dtype=losses.dtype)
+            losses = losses * valid_action_mask
+
+        if valid_action_mask is not None:
+            valid_steps_per_sample = valid_action_mask.sum(dim=(1, 2)).clamp_min(1.0)
+            valid_steps_total = valid_action_mask.sum().clamp_min(1.0)
+            valid_steps_per_dim = valid_action_mask.sum(dim=(0, 1)).clamp_min(1.0)
+            loss_per_dim = (losses.sum(dim=(0, 1)) / valid_steps_per_dim).detach().cpu().numpy().tolist()
+        else:
+            valid_steps_per_sample = None
+            valid_steps_total = None
+            loss_per_dim = losses.mean(dim=[0, 1]).detach().cpu().numpy().tolist()
+
         loss_dict = {
-            "loss_per_dim": losses.mean(dim=[0, 1]).detach().cpu().numpy().tolist(),
+            "loss_per_dim": loss_per_dim,
         }
 
         if reduction == "none":
             # Return per-sample losses (B,) by averaging over time and action dims
-            per_sample_loss = losses.mean(dim=(1, 2))
+            if valid_steps_per_sample is not None:
+                per_sample_loss = losses.sum(dim=(1, 2)) / valid_steps_per_sample
+            else:
+                per_sample_loss = losses.mean(dim=(1, 2))
             loss_dict["loss"] = per_sample_loss.mean().item()
             return per_sample_loss, loss_dict
         else:
             # Default: return scalar mean loss
-            loss = losses.mean()
+            if valid_steps_total is not None:
+                loss = losses.sum() / valid_steps_total
+            else:
+                loss = losses.mean()
             loss_dict["loss"] = loss.item()
             return loss, loss_dict
 

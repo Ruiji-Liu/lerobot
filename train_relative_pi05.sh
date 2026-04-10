@@ -1,0 +1,24 @@
+lerobot-train \
+  --dataset.repo_id=/home/ubuntu/LeForge/Data/Postprocess_lerobot/umi_pick_cubes_tcp_obsh5_relative30_rot6d \
+  --dataset.use_relative_eef_chunk=true \
+  --policy.path=lerobot/pi05_base \
+  --policy.chunk_size=30 \
+  --policy.n_action_steps=30 \
+  --policy.max_state_dim=32 \
+  --policy.max_action_dim=32 \
+  --policy.normalization_mapping='{"ACTION":"MEAN_STD","STATE":"MEAN_STD","VISUAL":"IDENTITY"}' \
+  --policy.dtype=bfloat16 \
+  --policy.compile_model=true \
+  --policy.gradient_checkpointing=true \
+  --policy.freeze_vision_encoder=false \
+  --policy.train_expert_only=false \
+  --policy.push_to_hub=false \
+  --policy.repo_id="" \
+  --num_workers=8 \
+  --batch_size=8 \
+  --steps=30000 \
+  --output_dir=outputs/train_relative_pi05/umi_tcp_relative_h30 \
+  --job_name=umi_relative_pi05 \
+  --policy.device=cuda \
+  --wandb.enable=false \
+  --log_freq=20
